@@ -1,0 +1,2 @@
+# CBWapper
+CoreBluetoothって非Sendableだし、async じゃないし、そういうのをいい感じに最新化したいよね
