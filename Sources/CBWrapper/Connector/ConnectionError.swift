@@ -13,6 +13,7 @@ public enum ConnectionError: Error {
     case disconnected
     case locked
     case notFound
+    case alreadyConnecting
     case alreadyDisconnected
     case maxLack(Int)
     case maxConnection

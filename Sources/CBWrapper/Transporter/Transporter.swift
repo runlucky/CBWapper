@@ -3,46 +3,43 @@ import CoreBluetooth
 import Observation
 
 @MainActor
-@Observable
-public final class CBTransporter: NSObject {
-    internal var centralManager: CBCentralManager!
-    private var discoveredPeripherals: [UUID: CBPeripheral] = [:]
-    private let _peripheralStream = MultiStream<Peripheral>(bufferingPolicy: .bufferingNewest(1))
-    private let _stateStream = MultiStream<CBManagerState>(bufferingPolicy: .bufferingNewest(1))
+public final class Transporter: NSObject {
+    private var centralManager: CBCentralManager!
 
-    public private(set) var currentState: CBManagerState = .unknown
-    public private(set) var isScanning = false
-    
-    internal var connectContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    internal var serviceContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    internal var characteristicContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    internal var characteristics: [UUID: CBCharacteristic] = [:]
+    private var discoveredPeripherals: [UUID: (timestamp: Date, peripheral: CBPeripheral)] = [:]
+    private var connectContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var serviceContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var characteristicContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var characteristics: [UUID: CBCharacteristic] = [:]
 
-    override init() {
+    private let _peripheralStream = MultiStream<DiscoveredPeripheral>(bufferingPolicy: .bufferingNewest(1))
+    private let _stateStream = MultiStream<TransporterState>(bufferingPolicy: .bufferingNewest(1))
+
+    override public init() {
         super.init()
         self.centralManager = CBCentralManager(delegate: self, queue: .main)
     }
-    
 }
 
-extension CBTransporter {
-    internal func getPeripheral(_ target: Peripheral) -> CBPeripheral? {
-        discoveredPeripherals[target.id]
+extension Transporter {
+    internal func getPeripheral(_ target: DiscoveredPeripheral) -> CBPeripheral? {
+        discoveredPeripherals[target.id]?.peripheral
     }
 }
 
-extension CBTransporter: @MainActor CBCentralManagerDelegate {
+extension Transporter: @MainActor CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        self.currentState = central.state
-        if central.state != .poweredOn {
-            isScanning = false
-        }
+        let state = TransporterState(central.state)
+        _stateStream.publish(state)
     }
     
     // ペリフェラル検出
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        discoveredPeripherals[peripheral.identifier] = peripheral
-        _peripheralStream.publish(Peripheral(id: peripheral.identifier))
+        guard let discovered = DiscoveredPeripheral(peripheral, advertisementData, RSSI) else { return }
+        if isDuplicate(peripheral.identifier, discovered.timestamp) { return }
+        
+        discoveredPeripherals[peripheral.identifier] = (discovered.timestamp, peripheral)
+        _peripheralStream.publish(discovered)
     }
     
     // 接続成功
@@ -56,10 +53,18 @@ extension CBTransporter: @MainActor CBCentralManagerDelegate {
         self.connectContinuation[peripheral.identifier]?.resume(throwing: ConnectionError.other(error))
         self.connectContinuation.removeValue(forKey: peripheral.identifier)
     }
+    
+    private func isDuplicate(_ id: UUID, _ timestamp: Date) -> Bool {
+        if let previous = discoveredPeripherals[id]?.timestamp {
+            let delta = timestamp.timeIntervalSince(previous)
+            return (0 <= delta && delta <= 0.1)
+        }
+        return false
+    }
 }
 
 
-extension CBTransporter: @MainActor CBPeripheralDelegate {
+extension Transporter: @MainActor CBPeripheralDelegate {
     /// Serviceを発見すると呼ばれます
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
@@ -85,13 +90,20 @@ extension CBTransporter: @MainActor CBPeripheralDelegate {
     }
 }
 
-extension CBTransporter: @MainActor IPeripheralScanner {
-    /// スキャナーの状態変化を通知します
-    func stateStream() async -> AsyncStream<CBManagerState> {
+extension Transporter: @MainActor IPeripheralScanner {
+    public var isScanning: Bool {
+        centralManager.isScanning
+    }
+    
+    public var currentState: TransporterState {
+        TransporterState(centralManager.state)
+    }
+
+    public func stateStream() async -> AsyncStream<TransporterState> {
         await _stateStream.subscribe()
     }
 
-    public func peripheralStream() async -> AsyncStream<Peripheral> {
+    public func peripheralStream() async -> AsyncStream<DiscoveredPeripheral> {
         await _peripheralStream.subscribe()
     }
 
@@ -101,21 +113,19 @@ extension CBTransporter: @MainActor IPeripheralScanner {
         }
         
         centralManager.scanForPeripherals(withServices: serviceUUIDs, options: options)
-        isScanning = true
         return true
     }
     
     public func stopScan() {
         centralManager.stopScan()
-        isScanning = false
     }
 
 }
 
-extension CBTransporter: IConnector {
+extension Transporter: IConnector {
     public var isMaxConnection: Bool { false }
 
-    public func connect(_ target: Peripheral, _ criteria: ConnectionCriteria, communicate: @Sendable @escaping (ICommunicator) async throws -> Void) async throws {
+    public func connect(_ target: DiscoveredPeripheral, _ criteria: ConnectionCriteria, communicate: @Sendable @escaping (ICommunicator) async throws -> Void) async throws {
         let communicator = try await self.connect(target, criteria)
         
         do {
@@ -128,7 +138,7 @@ extension CBTransporter: IConnector {
         }
     }
 
-    public func connect(_ target: Peripheral, _ criteria: ConnectionCriteria) async throws -> ICommunicator {
+    public func connect(_ target: DiscoveredPeripheral, _ criteria: ConnectionCriteria) async throws -> ICommunicator {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             guard self.centralManager.state == .poweredOn else {
                 continuation.resume(throwing: ConnectionError.powerOff)
@@ -140,6 +150,11 @@ extension CBTransporter: IConnector {
                 return
             }
             
+            if self.connectContinuation[target.id] != nil {
+                continuation.resume(throwing: ConnectionError.alreadyConnecting)
+                return
+            }
+
             switch peripheral.state {
             case .connecting:
                 continuation.resume(throwing: ConnectionError.connecting)
@@ -169,16 +184,14 @@ extension CBTransporter: IConnector {
         return SessionState(target, sessionID: UUID())
     }
 
-    public func disconnect(_ target: Peripheral) async throws {
+    public func disconnect(_ target: DiscoveredPeripheral) async throws {
         guard let peripheral = self.getPeripheral(target) else {
             throw ConnectionError.notFound
         }
         
         try self.disconnect(peripheral)
     }
-}
 
-extension CBTransporter {
     private func disconnect(_ peripheral: CBPeripheral) throws(ConnectionError) {
         switch peripheral.state {
         case .connecting:
@@ -237,3 +250,4 @@ extension CBTransporter {
         return characteristic
     }
 }
+

@@ -2,12 +2,14 @@ import CoreBluetooth
 
 /// ペリフェラルのスキャンを行うためのプロトコル
 protocol IPeripheralScanner {
+    /// スキャン中かどうかを返します
+    var isScanning: Bool { get }
     /// スキャナーの現在の状態を返します
-    var currentState: CBManagerState { get }
+    var currentState: TransporterState { get }
     /// スキャナーの状態変化を通知します
-    func stateStream() async -> AsyncStream<CBManagerState>
+    func stateStream() async -> AsyncStream<TransporterState>
     /// 受信したペリフェラルを通知します
-    func peripheralStream() async -> AsyncStream<Peripheral>
+    func peripheralStream() async -> AsyncStream<DiscoveredPeripheral>
     /// スキャンを開始します
     /// - serviceUUIDs スキャン対象のサービスUUID。nilの場合は全てのペリフェラルをスキャンします
     /// - options スキャンオプション
