@@ -166,6 +166,7 @@ extension Transporter: IConnector {
                 continuation.resume(throwing: ConnectionError.connectedOtherTask)
                 
             case .disconnected:
+                logging(.info, "\(target.name) 接続開始")
                 self.connectContinuation[target.id] = continuation
                 self.centralManager.connect(peripheral, options: nil)
                 
@@ -173,14 +174,19 @@ extension Transporter: IConnector {
                 continuation.resume(throwing: ConnectionError.unknown)
             }
         }
+        logging(.info, "\(target.name) 接続成功")
+
         
         guard let peripheral = self.getPeripheral(target) else {
             throw ConnectionError.notFound
         }
+        logging(.info, "\(target.name) Service検索開始")
 
-        let service = try await getService(peripheral, serviceID: criteria.serviceID)
-        let characteristic = try await getCharacteristic(service, characteristicID: criteria.characteristicID)
+        let service = try await getService(peripheral, serviceID: criteria.service)
+        logging(.info, "\(target.name) Characteristic検索開始")
+        let characteristic = try await getCharacteristic(service, characteristicID: criteria.characteristics.first!)
         
+        logging(.info, "\(target.name) Characteristic検出成功")
         return SessionState(target, sessionID: UUID())
     }
 
@@ -190,6 +196,7 @@ extension Transporter: IConnector {
         }
         
         try self.disconnect(peripheral)
+        logging(.info, "\(target.name) 切断")
     }
 
     private func disconnect(_ peripheral: CBPeripheral) throws(ConnectionError) {

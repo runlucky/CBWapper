@@ -1,7 +1,7 @@
 import CoreBluetooth
 
 /// Transporterの状態。CBManagerStateのラッパー
-public enum TransporterState : Sendable {
+public enum TransporterState: Sendable {
     /// 不明な状態
     case unknown
     /// Bluetoothシステムサービスとの接続が一時的に失われ、再接続を試みている
