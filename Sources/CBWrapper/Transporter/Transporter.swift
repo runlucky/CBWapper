@@ -8,9 +8,6 @@ public final class Transporter: NSObject {
 
     private var discoveredPeripherals: [UUID: (timestamp: Date, peripheral: CBPeripheral)] = [:]
     private var connectContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    private var serviceContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    private var characteristicContinuation: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    private var characteristics: [UUID: CBCharacteristic] = [:]
 
     private let _peripheralStream = MultiStream<DiscoveredPeripheral>(bufferingPolicy: .bufferingNewest(1))
     private let _stateStream = MultiStream<TransporterState>(bufferingPolicy: .bufferingNewest(1))
@@ -63,33 +60,6 @@ extension Transporter: @MainActor CBCentralManagerDelegate {
     }
 }
 
-
-extension Transporter: @MainActor CBPeripheralDelegate {
-    /// Serviceを発見すると呼ばれます
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        if let error {
-            self.serviceContinuation[peripheral.identifier]?.resume(throwing: ConnectionError.other(error))
-            self.serviceContinuation.removeValue(forKey: peripheral.identifier)
-            return
-        }
-
-        self.serviceContinuation[peripheral.identifier]?.resume(returning: ())
-        self.serviceContinuation.removeValue(forKey: peripheral.identifier)
-    }
-
-    /// Characteristicを発見すると呼ばれます
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        if let error {
-            self.characteristicContinuation[peripheral.identifier]?.resume(throwing: ConnectionError.other(error))
-            self.characteristicContinuation.removeValue(forKey: peripheral.identifier)
-            return
-        }
-        
-        self.characteristicContinuation[peripheral.identifier]?.resume(returning: ())
-        self.characteristicContinuation.removeValue(forKey: peripheral.identifier)
-    }
-}
-
 extension Transporter: @MainActor IPeripheralScanner {
     public var isScanning: Bool {
         centralManager.isScanning
@@ -125,8 +95,8 @@ extension Transporter: @MainActor IPeripheralScanner {
 extension Transporter: IConnector {
     public var isMaxConnection: Bool { false }
 
-    public func connect(_ target: DiscoveredPeripheral, _ criteria: ConnectionCriteria, communicate: @Sendable @escaping (ICommunicator) async throws -> Void) async throws {
-        let communicator = try await self.connect(target, criteria)
+    public func connect(_ target: DiscoveredPeripheral, _: ConnectionCriteria, communicate: @Sendable @escaping (ICommunicator) async throws -> Void) async throws {
+        let communicator = try await self.connect(target, ConnectionCriteria())
         
         do {
             try await communicate(communicator)
@@ -138,7 +108,7 @@ extension Transporter: IConnector {
         }
     }
 
-    public func connect(_ target: DiscoveredPeripheral, _ criteria: ConnectionCriteria) async throws -> ICommunicator {
+    public func connect(_ target: DiscoveredPeripheral, _: ConnectionCriteria) async throws -> ICommunicator {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             guard self.centralManager.state == .poweredOn else {
                 continuation.resume(throwing: ConnectionError.powerOff)
@@ -176,18 +146,11 @@ extension Transporter: IConnector {
         }
         logging(.info, "\(target.name) 接続成功")
 
-        
         guard let peripheral = self.getPeripheral(target) else {
             throw ConnectionError.notFound
         }
-        logging(.info, "\(target.name) Service検索開始")
 
-        let service = try await getService(peripheral, serviceID: criteria.service)
-        logging(.info, "\(target.name) Characteristic検索開始")
-        let characteristic = try await getCharacteristic(service, characteristicID: criteria.characteristics.first!)
-        
-        logging(.info, "\(target.name) Characteristic検出成功")
-        return SessionState(target, sessionID: UUID())
+        return SessionState(target, peripheral: peripheral, sessionID: UUID())
     }
 
     public func disconnect(_ target: DiscoveredPeripheral) async throws {
@@ -217,44 +180,4 @@ extension Transporter: IConnector {
             throw .unknown
         }
     }
-    
-    private func getService(_ target: CBPeripheral, serviceID: CBUUID) async throws -> CBService {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            guard target.state == .connected else {
-                continuation.resume(throwing: ConnectionError.alreadyDisconnected)
-                return
-            }
-            
-            target.delegate = self
-            target.discoverServices([serviceID])
-            
-            self.serviceContinuation[target.identifier] = continuation
-        }
-        
-        guard let service = target.services?.first(where: { $0.uuid == serviceID}) else {
-            throw CommunicationError.notFoundService
-        }
-            
-        return service
-    }
-    
-    private func getCharacteristic(_ target: CBService, characteristicID: CBUUID) async throws -> CBCharacteristic {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            guard let peripheral = target.peripheral,
-                  peripheral.state == .connected else {
-                continuation.resume(throwing: ConnectionError.alreadyDisconnected)
-                return
-            }
-            
-            peripheral.discoverCharacteristics([characteristicID], for: target)
-            self.characteristicContinuation[peripheral.identifier] = continuation
-        }
-        
-        guard let characteristic = target.characteristics?.first(where: { $0.uuid == characteristicID }) else {
-            throw CommunicationError.notFoundCharacteristic
-        }
-        
-        return characteristic
-    }
 }
-
