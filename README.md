@@ -3,10 +3,10 @@ CoreBluetoothって非Sendableだし、async じゃないし、そういうの�
 
 
 
-## 使用方法
+## 使用方法(簡易版)
 
 ### スキャン
-まず、IPeripheralScannerの実体を取得します。Transporterですね。
+まず、IPeripheralScannerの実体(Transporter)を取得します。
 
 startScanを呼ぶことでペリフェラル(センサ、アドバタイズとも言う)のスキャンを開始します。
 スキャンしたペリフェラルは、peripheralStreamで配信されます。
@@ -23,6 +23,25 @@ peripheralStreamから取得したPeripheralを使用して接続してくださ
 ペリフェラルと接続すると、ICommunicatorを受け取るので
 これを使用して通信してください。
 
+
+
+## protocolの解説
+### IPeripheralScanner
+ペリフェラルのスキャンを担当するプロトコルです。Transporterが実装しています。
+
+- スキャンの開始・終了
+スキャンを行う場合は startScan(withServices:options:)
+停止する場合は stopScan() を呼んでください。
+現在スキャン中かどうかは isScanning プロパティで確認できます。
+
+- Bluetoothの状態
+Bluetoothが使用可能かどうかは currentState で確認できます。
+状態に変化があった場合は stateStream() で配信します。
+
+- スキャン結果の配信
+スキャンしたペリフェラルは peripheralStream() で配信されます。
+ペリフェラルは CBPeripheral を DiscoveredPeripheralでラップして返します。
+これはCoreBluetoothを隠蔽したいことと、Sendableに準拠するためです。
 
 
 
