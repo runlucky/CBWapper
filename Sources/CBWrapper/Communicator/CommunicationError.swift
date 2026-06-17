@@ -3,5 +3,6 @@ public enum CommunicationError: Error {
     case notFoundCharacteristic
     case notSupportedNotify
     case alreadySending
+    case notResponse
     case other(Error?)
 }

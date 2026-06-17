@@ -10,7 +10,7 @@ public final class SessionState {
     internal let sessionID: UUID
 
     private let peripheral: CBPeripheral
-    private let characteristicTransceiver: CharacteristicTransceiver
+    private var transceiver: PeripheralTransceiver?
 
     private var service: CBService?
     private var characteristic: CBCharacteristic?
@@ -19,7 +19,6 @@ public final class SessionState {
         self.target = target
         self.peripheral = peripheral
         self.sessionID = sessionID
-        self.characteristicTransceiver = CharacteristicTransceiver(target, peripheral)
     }
 }
 
@@ -40,14 +39,22 @@ extension SessionState: ICommunicator {
         let discovered = try await CharacteristicDiscoverer(target, peripheral)
             .discover(targetID, in: service)
         self.characteristic = discovered
-        try await characteristicTransceiver.prepareCommunication(with: discovered)
+        self.transceiver = try await PeripheralTransceiver(peripheral, discovered)
     }
 
-    public func valueStream() async -> AsyncStream<Data> {
-        await characteristicTransceiver.stream()
+    public func receiveStream() async throws -> AsyncStream<Data> {
+        guard let transceiver else {
+            throw CommunicationError.notFoundCharacteristic
+        }
+
+        return await transceiver.receiveStream()
     }
 
-    public func send(_ value: Data) async throws {
-        try await characteristicTransceiver.send(value)
+    public func submit(_ value: Data) async throws {
+        guard let transceiver else {
+            throw CommunicationError.notFoundCharacteristic
+        }
+
+        try await transceiver.submit(value)
     }
 }

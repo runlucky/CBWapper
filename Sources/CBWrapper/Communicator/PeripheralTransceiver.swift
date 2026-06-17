@@ -1,36 +1,29 @@
 import Foundation
 import CoreBluetooth
 
+/// ペリフェラルと値の送受信を行います
 @MainActor
-internal final class CharacteristicTransceiver: NSObject {
-    private let target: DiscoveredPeripheral
+internal final class PeripheralTransceiver: NSObject {
     private let peripheral: CBPeripheral
-    private let valueStream = MultiStream<Data>()
+    private var characteristic: CBCharacteristic
 
-    private var characteristic: CBCharacteristic?
+    private let _receiveStream = MultiStream<Data>()
+
     private var notifyContinuation: CheckedContinuation<Void, any Error>?
     private var writeContinuation: CheckedContinuation<Void, any Error>?
 
-    internal init(_ target: DiscoveredPeripheral, _ peripheral: CBPeripheral) {
-        self.target = target
+    internal init(_ peripheral: CBPeripheral, _ characteristic: CBCharacteristic) async throws {
         self.peripheral = peripheral
-        super.init()
-    }
-
-    internal func prepareCommunication(with characteristic: CBCharacteristic) async throws {
         self.characteristic = characteristic
+        super.init()
         try await enableNotify(for: characteristic)
     }
 
-    internal func stream() async -> AsyncStream<Data> {
-        await valueStream.subscribe()
+    internal func receiveStream() async -> AsyncStream<Data> {
+        await _receiveStream.subscribe()
     }
 
-    internal func send(_ value: Data) async throws {
-        guard let characteristic else {
-            throw CommunicationError.notFoundCharacteristic
-        }
-
+    internal func submit(_ value: Data) async throws {
         guard writeContinuation == nil else {
             throw CommunicationError.alreadySending
         }
@@ -44,7 +37,7 @@ internal final class CharacteristicTransceiver: NSObject {
             peripheral.delegate = self
             writeContinuation = continuation
             peripheral.writeValue(value, for: characteristic, type: .withResponse)
-            logging(.info, "\(target.name) データ送信開始: \(value as NSData)")
+            logging(.info, "\(peripheral.name ?? "nil") データ送信: \(value as NSData)")
         }
     }
 
@@ -53,9 +46,7 @@ internal final class CharacteristicTransceiver: NSObject {
             throw CommunicationError.notSupportedNotify
         }
 
-        guard !characteristic.isNotifying else {
-            return
-        }
+        if characteristic.isNotifying { return }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             guard peripheral.state == .connected else {
@@ -66,11 +57,12 @@ internal final class CharacteristicTransceiver: NSObject {
             peripheral.delegate = self
             notifyContinuation = continuation
             peripheral.setNotifyValue(true, for: characteristic)
+            logging(.info, "\(peripheral.name ?? "nil") Notify開始")
         }
     }
 }
 
-extension CharacteristicTransceiver: @MainActor CBPeripheralDelegate {
+extension PeripheralTransceiver: @MainActor CBPeripheralDelegate {
     internal func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
             notifyContinuation?.resume(throwing: CommunicationError.other(error))
@@ -78,6 +70,7 @@ extension CharacteristicTransceiver: @MainActor CBPeripheralDelegate {
             return
         }
 
+        logging(.info, "\(peripheral.name ?? "nil") Notify状態更新: \(characteristic.isNotifying ? "ON" : "OFF")")
         notifyContinuation?.resume(returning: ())
         notifyContinuation = nil
     }
@@ -95,9 +88,10 @@ extension CharacteristicTransceiver: @MainActor CBPeripheralDelegate {
 
     internal func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil,
-              characteristic.uuid == self.characteristic?.uuid,
+              characteristic.uuid == self.characteristic.uuid,
               let value = characteristic.value else { return }
 
-        valueStream.publish(value)
+        logging(.info, "\(peripheral.name ?? "nil") データ受信: \(value as NSData)")
+        _receiveStream.publish(value)
     }
 }
